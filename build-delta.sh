@@ -109,38 +109,109 @@ echo "  Format: $DELTA_FORMAT"
 echo "  Output: $DELTA_FILENAME"
 
 mkdir -p "$OUTPUT_DIR"
-
-# 在删除源文件前记录全量镜像大小（后续用于计算增量包占比）
+OUTPUT_DIR=$(realpath "$OUTPUT_DIR")
+DELTA_FILE="$OUTPUT_DIR/$DELTA_FILENAME"
 FULL_SIZE=$(stat -c %s "$TARGET_IMG")
 
-# --- 动态计算或使用指定的工作文件系统大小 ---
+# 只删除本次生成的临时文件，绝不删除调用者传入的 .skosys。
+# 提前注册 trap，覆盖 mktemp/fallocate/mkfs/receive 失败。
+WORK_DIR=""
+WORK_IMG=""
+DELTA_STAGING=""
+
+release_work() {
+    if [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
+        if mountpoint -q "$WORK_DIR"; then
+            if ! umount "$WORK_DIR"; then
+                echo "Error: cannot unmount $WORK_DIR; preserving it and $WORK_IMG" >&2
+                return 1
+            fi
+        fi
+        # 不使用 rm -rf：即使挂载检查失败，也不能递归删除仍挂载的子卷。
+        if ! rmdir "$WORK_DIR"; then
+            echo "Error: cannot remove work mountpoint; preserving $WORK_IMG" >&2
+            return 1
+        fi
+    fi
+    WORK_DIR=""
+    if [ -n "$WORK_IMG" ]; then
+        rm -f -- "$WORK_IMG" || return 1
+        WORK_IMG=""
+    fi
+}
+
+cleanup() {
+    local status=$?
+    trap - EXIT
+    if ! release_work; then
+        status=1
+    fi
+    if [ -n "$DELTA_STAGING" ]; then
+        rm -rf -- "$DELTA_STAGING" || status=1
+    fi
+    if [ "$status" -ne 0 ]; then
+        rm -f -- "$DELTA_FILE" "$OUTPUT_DIR/delta-status.txt" \
+            "$OUTPUT_DIR/delta-entry.json" "$OUTPUT_DIR/delta-sha256sum.txt"
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# 清掉上一次同目录运行留下的结果，失败时不能继续呈现旧的 OK。
+rm -f -- "$DELTA_FILE" "$OUTPUT_DIR/delta-status.txt" \
+    "$OUTPUT_DIR/delta-entry.json" "$OUTPUT_DIR/delta-sha256sum.txt"
 WORK_DIR=$(mktemp -d /tmp/delta-work-XXXX)
 WORK_IMG=$(mktemp /tmp/delta-img-XXXX.img)
+DELTA_STAGING=$(mktemp -d "$OUTPUT_DIR/.delta-staging-XXXX")
+DELTA_PARTIAL="$DELTA_STAGING/delta.skdelta.partial"
+
+available_bytes() {
+    df -B1 --output=avail "$1" | tail -1 | tr -d ' '
+}
+
+require_output_space() {
+    local available
+    available=$(available_bytes "$OUTPUT_DIR")
+    if [ "$available" -lt "$OUTPUT_RESERVE" ]; then
+        echo "Error: insufficient output disk space (available: $available bytes, estimated need: $OUTPUT_RESERVE bytes); use a smaller --work-size or a larger output filesystem" >&2
+        return 1
+    fi
+}
+
+# batch 最坏情况接近完整 target 数据，而不是压缩后的 .skosys 大小。
+# 先用 xz 索引中的未压缩 send 流估算，留 10% 格式开销及原有 5GiB
+# 系统/元数据余量。send 中的克隆/稀疏文件可能使此估计偏小，所以还原后
+# 还会按 target 的实际 apparent size 复查；这些是保守预算，不是格式上界。
+TARGET_STREAM_SIZE=$(xz --robot --list "$TARGET_IMG" | awk -F '\t' '$1 == "totals" {print $5}')
+if ! [[ "$TARGET_STREAM_SIZE" =~ ^[0-9]+$ ]] || [ "$TARGET_STREAM_SIZE" -eq 0 ] || [ "$FULL_SIZE" -eq 0 ]; then
+    echo "Error: cannot determine target image size" >&2
+    exit 1
+fi
+SYSTEM_RESERVE=$((5 * 1024 * 1024 * 1024))
+OUTPUT_RESERVE=$((TARGET_STREAM_SIZE + TARGET_STREAM_SIZE / 10 + SYSTEM_RESERVE))
+require_output_space
 
 if [ "$WORK_SIZE_SET" = false ]; then
-    AVAIL_KB=$(df --output=avail "$(dirname "$WORK_IMG")" | tail -1 | tr -d ' ')
-    AVAIL_GB=$((AVAIL_KB / 1024 / 1024))
-    # 预留 5G 给 rsync batch 输出、xz 压缩和系统开销
-    WORK_SIZE_GB=$((AVAIL_GB - 5))
+    AVAIL_BYTES=$(available_bytes "$(dirname "$WORK_IMG")")
+    WORK_RESERVE=$SYSTEM_RESERVE
+    if [ "$(stat -c %d "$WORK_IMG")" = "$(stat -c %d "$OUTPUT_DIR")" ]; then
+        WORK_RESERVE=$OUTPUT_RESERVE
+    fi
+    WORK_SIZE_GB=$(((AVAIL_BYTES - WORK_RESERVE) / 1024 / 1024 / 1024))
     if [ "$WORK_SIZE_GB" -lt 15 ]; then
-        echo "Error: insufficient disk space (available: ${AVAIL_GB}G, need at least 20G)" >&2
+        echo "Error: insufficient disk space for a 15GiB work filesystem plus $WORK_RESERVE reserved bytes" >&2
         exit 1
     fi
     WORK_SIZE="${WORK_SIZE_GB}G"
-    echo "Auto-calculated work filesystem size: $WORK_SIZE (available: ${AVAIL_GB}G)"
+    echo "Auto-calculated work filesystem size: $WORK_SIZE (reserved: $WORK_RESERVE bytes)"
 fi
-
-cleanup() {
-    echo "Cleaning up work filesystem..."
-    sync 2>/dev/null || true
-    umount "$WORK_DIR" 2>/dev/null || true
-    rm -rf "$WORK_DIR"
-    rm -f "$WORK_IMG"
-}
-trap cleanup EXIT
 
 echo "Creating temporary btrfs filesystem ($WORK_SIZE)..."
 fallocate -l "$WORK_SIZE" "$WORK_IMG"
+# 同样约束手动 --work-size，避免挤掉 batch/压缩输出的空间。
+require_output_space
 mkfs.btrfs -f "$WORK_IMG" > /dev/null
 mount -t btrfs -o loop,nodatacow "$WORK_IMG" "$WORK_DIR"
 
@@ -149,14 +220,9 @@ mount -t btrfs -o loop,nodatacow "$WORK_IMG" "$WORK_DIR"
 # xz -dc 解压后通过管道传给 btrfs receive 还原为子卷
 echo "Restoring target: $TARGET_NAME ..."
 xz -dc "$TARGET_IMG" | btrfs receive --quiet "$WORK_DIR"
-# 还原后立即删除源文件，腾出磁盘空间（CI 磁盘有限）
-echo "Freeing source image: $(basename "$TARGET_IMG")"
-rm -f "$TARGET_IMG"
 
 echo "Restoring base: $BASE_NAME ..."
 xz -dc "$BASE_IMG" | btrfs receive --quiet "$WORK_DIR"
-echo "Freeing source image: $(basename "$BASE_IMG")"
-rm -f "$BASE_IMG"
 
 if [ ! -d "$WORK_DIR/$TARGET_NAME" ]; then
     echo "Error: target subvolume not found after btrfs receive" >&2
@@ -170,6 +236,12 @@ if [ ! -d "$WORK_DIR/$BASE_NAME" ]; then
     ls -1 "$WORK_DIR/" >&2
     exit 1
 fi
+
+# 按还原后的逻辑大小（包含稀疏区、独立 reflink 文件）复查输出预算。
+# du 默认只计一次硬链接，与 rsync -H 一致；不能使用物理块占用估计 batch。
+TARGET_APPARENT_SIZE=$(du -sb "$WORK_DIR/$TARGET_NAME" | cut -f1)
+OUTPUT_RESERVE=$((TARGET_APPARENT_SIZE + TARGET_APPARENT_SIZE / 10 + SYSTEM_RESERVE))
+require_output_space
 
 # --- 生成目标 subvolume 元数据指纹（用于部署后校验） ---
 # 遍历目标子卷的所有文件，收集每个文件的属性（路径/大小/权限/UID/GID/类型），
@@ -190,8 +262,6 @@ echo "Target metadata hash: $TARGET_META_HASH"
 # 设备上的 baseline 可能包含 CI baseline 中不存在的文件（如 fontconfig 缓存等运行时产生的文件）。
 # delta 的删除清单只包含 CI baseline 中有但 target 中没有的文件，无法覆盖设备独有的多余文件。
 # 将 target 完整文件列表打入 delta 包，部署后据此删除所有不在列表中的文件，确保精确匹配。
-DELTA_STAGING="$OUTPUT_DIR/delta-staging"
-mkdir -p "$DELTA_STAGING"
 FILELIST_FILE="$DELTA_STAGING/.delta-filelist"
 (cd "$WORK_DIR/$TARGET_NAME" && find . \
     -not -path './proc/*' -not -path './sys/*' -not -path './dev/*' \
@@ -214,7 +284,6 @@ cat > "$DELTA_STAGING/.delta-meta.json" <<EOF
 EOF
 
 # --- 生成增量包（按 DELTA_FORMAT 分支） ---
-DELTA_TAR="$OUTPUT_DIR/delta.tar"
 
 if [ "$DELTA_FORMAT" = "rsync-batch" ]; then
     # === rsync-batch 格式 ===
@@ -231,8 +300,14 @@ if [ "$DELTA_FORMAT" = "rsync-batch" ]; then
     BATCH_SIZE=$(stat -c %s "$DELTA_STAGING/batch")
     echo "  Batch file size: $(numfmt --to=iec "$BATCH_SIZE")"
 
-    tar cf "$DELTA_TAR" -C "$DELTA_STAGING" batch .delta-filelist .delta-meta.json
-    rm -rf "$DELTA_STAGING"
+    # batch 已包含部署所需数据，先卸载并释放大镜像，再写压缩输出。
+    release_work
+    # OUTPUT_DIR 可能在另一块盘上，释放工作镜像未必会增加这里的空间。
+    OUTPUT_RESERVE=$((BATCH_SIZE + BATCH_SIZE / 10 + SYSTEM_RESERVE))
+    require_output_space
+    echo "Compressing delta with xz..."
+    tar cf - -C "$DELTA_STAGING" batch .delta-filelist .delta-meta.json \
+        | xz -7 -T0 > "$DELTA_PARTIAL"
 
 else
     # === tar 格式 ===
@@ -244,8 +319,8 @@ else
     ATTRS_FILE="$DELTA_STAGING/.delta-attrs"
 
     rsync -aAXH --delete --dry-run --itemize-changes \
-        "$WORK_DIR/$TARGET_NAME/" "$WORK_DIR/$BASE_NAME/" 2>/dev/null \
-        > "$CHANGES_FILE" || true
+        "$WORK_DIR/$TARGET_NAME/" "$WORK_DIR/$BASE_NAME/" \
+        > "$CHANGES_FILE"
 
     true > "$DELETIONS_FILE"
     true > "$MODIFIED_FILE"
@@ -303,31 +378,24 @@ else
 
     if [ "$MOD_COUNT" -eq 0 ] && [ "$DEL_COUNT" -eq 0 ] && [ "$ATTR_COUNT" -eq 0 ]; then
         echo "No differences found between versions, skipping"
+        release_work
         echo "SKIP" > "$OUTPUT_DIR/delta-status.txt"
-        rm -rf "$DELTA_STAGING"
         exit 0
     fi
 
-    echo "Creating delta tar package..."
-    tar cf "$DELTA_TAR" -C "$DELTA_STAGING" .delta-deletions .delta-attrs .delta-filelist .delta-meta.json
-
-    if [ "$MOD_COUNT" -gt 0 ]; then
-        tar rf "$DELTA_TAR" -C "$WORK_DIR/$TARGET_NAME" \
-            --xattrs --acls --numeric-owner \
-            -T "$MODIFIED_FILE"
-    fi
-
-    rm -rf "$DELTA_STAGING"
+    # 一个完整 tar 流，控制文件和 target 文件写入同一归档，不拼接 tar。
+    # 此分支仍要读取 target，因此压缩管道完成后才能卸载工作文件系统。
+    echo "Compressing delta with xz..."
+    tar cf - --xattrs --acls --numeric-owner \
+        -C "$DELTA_STAGING" .delta-deletions .delta-attrs .delta-filelist .delta-meta.json \
+        -C "$WORK_DIR/$TARGET_NAME" -T "$MODIFIED_FILE" \
+        | xz -7 -T0 > "$DELTA_PARTIAL"
+    release_work
 fi
 
-# --- xz 压缩 ---
-# -7: 压缩级别 7（平衡压缩率和速度）
-# -T0: 使用所有 CPU 核心并行压缩
-DELTA_FILE="$OUTPUT_DIR/$DELTA_FILENAME"
-
-echo "Compressing delta with xz..."
-xz -7 -T0 < "$DELTA_TAR" > "$DELTA_FILE"
-rm -f "$DELTA_TAR"
+# -7/-T0 保持原压缩参数；pipefail 确保 tar 或 xz 失败都不发布半成品。
+# 所有生成步骤和卸载成功后才将临时产物移到正式路径。
+mv -- "$DELTA_PARTIAL" "$DELTA_FILE"
 
 # --- 增量包大小阈值检查 ---
 # 如果增量包体积超过全量镜像的 MAX_RATIO%，说明差异太大，增量更新意义不大，跳过
