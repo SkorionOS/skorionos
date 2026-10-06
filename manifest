@@ -5,7 +5,7 @@ export SYSTEM_DESC="SkorionOS"
 export SYSTEM_NAME="skorionos"
 export USERNAME="gamer"
 export SIZE="40000MB"
-export ARCHIVE_DATE="2026/08/30"
+export ARCHIVE_DATE="2026/10/01"
 export WEBSITE="https://github.com/SkorionOS/skorionos"
 export DOCUMENTATION_URL="https://github.com/SkorionOS/skorionos"
 export BUG_REPORT_URL="https://github.com/SkorionOS/skorionos/issues"
@@ -140,8 +140,8 @@ export PACKAGES="\
 "
 
 export PACKAGE_OVERRIDES_URLS="\
-	https://github.com/SkorionOS/linux-skorion/releases/download/v7.2.1-sk2-1/linux-skchos-7.2.1.sk2-1-x86_64.pkg.tar.zst \
-	https://github.com/SkorionOS/linux-skorion/releases/download/v7.2.1-sk2-1/linux-skchos-headers-7.2.1.sk2-1-x86_64.pkg.tar.zst \
+	https://github.com/SkorionOS/linux-skorion/releases/download/v7.2.8-sk2-1/linux-skchos-7.2.8.sk2-1-x86_64.pkg.tar.zst \
+	https://github.com/SkorionOS/linux-skorion/releases/download/v7.2.8-sk2-1/linux-skchos-headers-7.2.8.sk2-1-x86_64.pkg.tar.zst \
 	https://archive.archlinux.org/packages/l/lib32-libxkbcommon/lib32-libxkbcommon-1.11.0-1-x86_64.pkg.tar.zst \
 	https://archive.archlinux.org/packages/l/libxkbcommon/libxkbcommon-1.11.0-1-x86_64.pkg.tar.zst \
 	https://archive.archlinux.org/packages/l/libxkbcommon-x11/libxkbcommon-x11-1.11.0-1-x86_64.pkg.tar.zst \
