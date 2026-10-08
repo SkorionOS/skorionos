@@ -26,6 +26,9 @@ fi
 # If we decide the sentinel is consumed, execute this command instead and fail
 RESTORE_SESSION=(/usr/lib/os-session-select) # No arguments restores the session
 
+# Shared by every desktop overlay; missing helpers must fail closed.
+source /usr/lib/skorion-session-handoff || die "Cannot load session handoff helper"
+
 # Find or check config return session
 function check_return() {
   if [[ -z ${HOME+x} ]]; then
@@ -55,27 +58,14 @@ function check_return() {
 
 # Find or check config sentinel
 function check_sentinel() {
-  if [[ -z ${HOME+x} ]]; then
-    echo >&2 "$0: No \$HOME variable!"
-    # Rather than break we'll just launch cosmic and hope for the best?
-    return 0
+  local sentinel_value
+  sentinel_value=$(cat "$config_dir/$SENTINEL_FILE") || return 1
+  # Preserve Cinnamon's marker-selected command, including its Xorg fallback.
+  if [[ "$sentinel_value" == "wayland" ]]; then
+    CONFIGURED_CHAINED_SESSION=(/usr/bin/cinnamon-session-cinnamon --wayland)
+  else
+    CONFIGURED_CHAINED_SESSION=(/usr/bin/sx /usr/bin/cinnamon-session-cinnamon)
   fi
-
-  local config_dir="${XDG_CONF_DIR:-"$HOME/.config"}"
-  (
-    cd "$HOME"
-    cd "$config_dir"
-    sentinel_value="$(cat "$SENTINEL_FILE")"
-    if [[ "$sentinel_value" == "wayland" ]]; then
-      echo "/usr/bin/cinnamon-session-cinnamon  --wayland"
-    else
-      echo "/usr/bin/sx /usr/bin/cinnamon-session-cinnamon"
-    fi
-
-  ) || return 1 # If we couldn't read the value or it wasn't what we wanted
-
-  # Found value, we're good to continue
-  return 0
 }
 
 function delay_set_return_session() {
@@ -83,25 +73,27 @@ function delay_set_return_session() {
   systemd-run --on-active=5s bash -c "sudo /usr/bin/skorion-session-only-update $session"
 }
 
-if CONFIGURED_CHAINED_SESSION=$(check_sentinel); then
-  echo >&2 "$0: Found sentinel, waiting for GPU to settle..."
-  sleep 2
-
-  config_dir="${XDG_CONF_DIR:-"$HOME/.config"}"
-  rm -f "$config_dir/$SENTINEL_FILE"
-  echo >&2 "$0: Sentinel consumed, launching desktop session"
-
+if check_sentinel >/dev/null; then
+  # Consume only this attempt before waiting, retaining return state on timeout.
+  # Never remove a marker created by a newer request during the wait.
+  rm -- "$config_dir/$SENTINEL_FILE" || die "Cannot consume desktop sentinel; refusing desktop startup"
+  echo >&2 "$0: Sentinel consumed"
   if [[ "$SK_CHOS_SESSION" == "wayland" ]]; then
-    exec "$CONFIGURED_CHAINED_SESSION"
+    launch_desktop "${CONFIGURED_CHAINED_SESSION[@]}"
   else
-    return_file="$HOME/.config/${RETURN_SESSION_FILE}"
-    return_session=$(cat "$return_file")
-    delay_set_return_session $return_session || true
-    sudo skorion-session-use-sddm cinnamon
+    # Keep Cinnamon's Xorg SDDM/return-update path, but gate both side effects.
+    wait_session_handoff
+    (
+      exec {SESSION_LOCK}>&-
+      return_file="$config_dir/$RETURN_SESSION_FILE"
+      return_session=$(cat "$return_file")
+      delay_set_return_session "$return_session" || true
+      sudo skorion-session-use-sddm cinnamon
+    )
   fi
 else
   if CONFIGURED_RETURN_SESSION=$(check_return); then
-    if /usr/lib/os-session-select "$CONFIGURED_RETURN_SESSION"; then
+    if (exec {SESSION_LOCK}>&-; /usr/lib/os-session-select "$CONFIGURED_RETURN_SESSION"); then
       echo "Session restored successfully"
       exit 0
     else
@@ -111,7 +103,7 @@ else
   # Session restore should've stopped us, if it is broken at least let cosmic continue to open
 
   echo >&2 "$0: Sentinel value not found, executing session-select to restore session"
-  "${RESTORE_SESSION[@]}" || echo >&2 "$0: !! Failed to restore previous session, executing chained session"
+  (exec {SESSION_LOCK}>&-; "${RESTORE_SESSION[@]}") || echo >&2 "$0: !! Failed to restore previous session, checking handoff before chained session"
   # Session restore should've stopped us, if it is broken at least let cosmic continue to open
-  exec "${CHAINED_SESSION[@]}"
+  launch_desktop "${CHAINED_SESSION[@]}"
 fi

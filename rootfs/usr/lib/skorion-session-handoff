@@ -1,0 +1,126 @@
+# Shared Bash library for the desktop oneshot launchers; do not execute directly.
+# The caller defines die(), then sources this before inspecting session markers.
+
+# Serialize oneshot invocations only. os-session-select does not use this lock.
+# Keep the lock file: unlinking it would allow two independent locks.
+[[ -n ${HOME:-} ]] || die "No HOME variable"
+config_dir="${XDG_CONF_DIR:-"$HOME/.config"}"
+[[ "$config_dir" = /* ]] || config_dir="$HOME/$config_dir"
+mkdir -p "$config_dir" || die "Cannot create session config directory"
+exec {SESSION_LOCK}>"$config_dir/skorion-session-oneshot.lock"
+flock -n "$SESSION_LOCK" || die "Another oneshot invocation is handling this session"
+
+HANDOFF_TIMEOUT=30
+
+# Linux uptime is monotonic across wall-clock adjustments (whole seconds).
+function handoff_time()
+{
+  local uptime unused
+  read -r uptime unused < /proc/uptime || return 1
+  [[ "$uptime" =~ ^[0-9]+\.[0-9]+$ ]] || return 1
+  echo "${uptime%%.*}"
+}
+
+# Bound every bus query as well as the whole observation window. KILL ensures
+# an unresponsive systemctl cannot extend the deadline by ignoring TERM.
+function query_session()
+{
+  local now remaining
+  now=$(handoff_time) || return 1
+  remaining=$((handoff_deadline - now))
+  (( remaining > 0 )) || return 1
+  (( remaining <= 2 )) || remaining=2
+  timeout --signal=KILL "${remaining}s" systemctl --user "$@"
+}
+
+function session_is_stopped()
+{
+  local states jobs line key value id="" load="" active="" sub="" job=""
+  local have_job=0 seen_target=0 seen_steam=0
+  states=$(query_session show --property=Id,LoadState,ActiveState,SubState,Job \
+    graphical-session.target gamescope-session-plus@steam.service \
+    'gamescope-session-plus@*.service') || {
+    handoff_reason="Unable to query session unit states"
+    return 1
+  }
+  [[ -n "$states" ]] || { handoff_reason="Empty session unit states"; return 1; }
+  # Include a final blank record separator, since command substitution strips it.
+  while IFS= read -r line; do
+    if [[ -n "$line" ]]; then
+      key=${line%%=*}; value=${line#*=}
+      case "$key" in
+        Id) id=$value ;;
+        LoadState) load=$value ;;
+        ActiveState) active=$value ;;
+        SubState) sub=$value ;;
+        Job) job=$value; have_job=1 ;;
+        *) handoff_reason="Unexpected unit state field: $line"; return 1 ;;
+      esac
+      continue
+    fi
+    [[ -n "$id$load$active$sub$job" || "$have_job" != 0 ]] || continue
+    case "$id" in
+      graphical-session.target) seen_target=1 ;;
+      gamescope-session-plus@steam.service) seen_steam=1 ;;
+      gamescope-session-plus@*.service) ;;
+      *) handoff_reason="Missing or unexpected session unit ID: $id"; return 1 ;;
+    esac
+    # Treat failed as unsafe: it does not prove all old session work is gone.
+    # An absent optional service is safe only with complete inactive/dead data.
+    if [[ "$active" != inactive || "$sub" != dead || "$have_job" != 1 ||
+          -n "$job" || ( "$load" != loaded &&
+          ( "$load" != not-found || "$id" == graphical-session.target ) ) ]]; then
+      handoff_reason="$id: LoadState=$load ActiveState=$active SubState=$sub Job=$job"
+      return 1
+    fi
+    id=""; load=""; active=""; sub=""; job=""; have_job=0
+  done <<< "$states
+
+"
+  [[ "$seen_target" == 1 && "$seen_steam" == 1 ]] || {
+    handoff_reason="Missing required session unit records"; return 1;
+  }
+  jobs=$(query_session list-jobs --no-legend --plain --no-pager --full) || {
+    handoff_reason="Unable to query session jobs"; return 1;
+  }
+  local number unit kind state extra
+  while read -r number unit kind state extra; do
+    [[ -n "$number$unit$kind$state$extra" ]] || continue
+    [[ "$number" =~ ^[0-9]+$ && -n "$unit" && -n "$kind" &&
+       -n "$state" && -z "$extra" ]] || {
+      handoff_reason="Malformed session job response"; return 1;
+    }
+    case "$unit" in
+      graphical-session.target|gamescope-session-plus@*.service)
+        handoff_reason="Pending session job: $number $unit $kind $state"
+        return 1 ;;
+    esac
+  done <<< "$jobs"
+  return 0
+}
+
+function wait_session_handoff()
+{
+  local now handoff_deadline
+  now=$(handoff_time) || die "Cannot read monotonic clock"
+  handoff_deadline=$((now + HANDOFF_TIMEOUT))
+  local handoff_reason="Session handoff not yet observed"
+  echo >&2 "$0: Waiting up to ${HANDOFF_TIMEOUT}s for the old graphical session to stop"
+  until session_is_stopped; do
+    now=$(handoff_time) || die "Cannot read monotonic clock"
+    if (( now >= handoff_deadline )); then
+      die "Session handoff timed out; refusing desktop startup: $handoff_reason"
+    fi
+    sleep 0.2
+  done
+  now=$(handoff_time) || die "Cannot read monotonic clock"
+  (( now < handoff_deadline )) || die "Session handoff deadline reached; refusing desktop startup"
+  echo >&2 "$0: Observed old session inactive"
+}
+
+function launch_desktop()
+{
+  wait_session_handoff
+  exec {SESSION_LOCK}>&-
+  exec "$@"
+}

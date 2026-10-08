@@ -8,16 +8,19 @@ SENTINEL_FILE="steamos-session-select"
 RETURN_SESSION_FILE="skorionos-session-return"
 
 # If we proceed, execute this
-CHAINED_SESSION="/usr/bin/gnome-session"
+CHAINED_SESSION=(/usr/bin/gnome-session)
 # If we decide the sentinel is consumed, execute this command instead and fail
 RESTORE_SESSION=(/usr/lib/os-session-select) # No arguments restores the session
+
+# Shared by every desktop overlay; missing helpers must fail closed.
+source /usr/lib/skorion-session-handoff || die "Cannot load session handoff helper"
 
 # Find or check config return session
 function check_return()
 {
   if [[ -z ${HOME+x} ]]; then
     echo >&2 "$0: No \$HOME variable!"
-    # Rather than break we'll just launch plasma and hope for the best?
+    # Rather than break we'll just launch GNOME and hope for the best?
     return 0
   fi
   local config_dir="${XDG_CONF_DIR:-"$HOME/.config"}"
@@ -45,7 +48,7 @@ function check_sentinel()
 {
   if [[ -z ${HOME+x} ]]; then
     echo >&2 "$0: No \$HOME variable!"
-    # Rather than break we'll just launch plasma and hope for the best?
+    # Rather than break we'll just launch GNOME and hope for the best?
     return 0
   fi
 
@@ -66,28 +69,26 @@ function check_sentinel()
   return 0
 }
 
-if CONFIGURED_CHAINED_SESSION=$(check_sentinel); then
-  echo >&2 "$0: Found sentinel, waiting for GPU to settle..."
-  sleep 2
-
-  config_dir="${XDG_CONF_DIR:-"$HOME/.config"}"
-  rm -f "$config_dir/$SENTINEL_FILE"
-  echo >&2 "$0: Sentinel consumed, launching desktop session"
-
-  exec "$CONFIGURED_CHAINED_SESSION"
+if check_sentinel >/dev/null; then
+  # Consume this attempt before waiting; a timeout leaves the return file for
+  # SDDM's next Relogin instead of repeatedly attempting the desktop. Do not
+  # remove a newer marker at the end of the wait.
+  rm -- "$config_dir/$SENTINEL_FILE" || die "Cannot consume desktop sentinel; refusing desktop startup"
+  echo >&2 "$0: Sentinel consumed"
+  launch_desktop "${CHAINED_SESSION[@]}"
 else
   if CONFIGURED_RETURN_SESSION=$(check_return); then
-    if /usr/lib/os-session-select "$CONFIGURED_RETURN_SESSION"; then
+    if (exec {SESSION_LOCK}>&-; /usr/lib/os-session-select "$CONFIGURED_RETURN_SESSION"); then
       echo "Session restored successfully"
       exit 0
     else
       echo "Failed to restore session"
     fi
   fi
-  # Session restore should've stopped us, if it is broken at least let plasma continue to open
+  # Session restore should've stopped us, if it is broken at least let GNOME continue to open
 
   echo >&2 "$0: Sentinel value not found, executing session-select to restore session"
-  "${RESTORE_SESSION[@]}" || echo >&2 "$0: !! Failed to restore previous session, executing chained session"
-  # Session restore should've stopped us, if it is broken at least let plasma continue to open
-  exec "$CHAINED_SESSION"
+  (exec {SESSION_LOCK}>&-; "${RESTORE_SESSION[@]}") || echo >&2 "$0: !! Failed to restore previous session, checking handoff before chained session"
+  # Session restore should've stopped us, if it is broken at least let GNOME continue to open
+  launch_desktop "${CHAINED_SESSION[@]}"
 fi
