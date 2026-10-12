@@ -90,6 +90,8 @@ export PACKAGES="\
 	mesa-demos \
 	nano \
 	networkmanager \
+	iwd \
+	wpa_supplicant \
 	nfs-utils \
 	noise-suppression-for-voice \
 	noto-fonts-emoji \
@@ -271,6 +273,7 @@ export FILES_TO_DELETE="\
 	/usr/share/libalpm/hooks/70-dkms-upgrade.hook \
 	/usr/share/libalpm/hooks/71-dkms-remove.hook \
 	/usr/lib/systemd/system/hhd@.service \
+	/usr/lib/systemd/network/80-iwd.link \
 	/usr/share/alsa/ucm2/USB-Audio/Sony/DualSense-PS5-HiFi.conf \
 	/usr/share/alsa/ucm2/USB-Audio/Sony/DualSense-PS5.conf \
 	/*.whl \
