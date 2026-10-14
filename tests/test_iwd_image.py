@@ -57,7 +57,7 @@ class IwdImageTests(unittest.TestCase):
                 self.assertIn('NetworkManager', values['SERVICES'].split())
                 self.assertFalse({'iwd', 'iwd.service', 'wpa_supplicant',
                                   'wpa_supplicant.service'} & set(values['SERVICES'].split()))
-                self.assertEqual(values['VERSION'], '56-5')
+                self.assertEqual(values['VERSION'], '56-6')
                 for path in ('/etc/iwd/main.conf', '/usr/lib/iwd/iwd',
                              '/usr/lib/systemd/system/iwd.service',
                              '/usr/share/dbus-1/system-services/net.connman.iwd.service',

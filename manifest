@@ -1,6 +1,6 @@
 #! /bin/bash
 
-export VERSION="56-5"
+export VERSION="56-6"
 export SYSTEM_DESC="SkorionOS"
 export SYSTEM_NAME="skorionos"
 export USERNAME="gamer"
@@ -142,8 +142,8 @@ export PACKAGES="\
 "
 
 export PACKAGE_OVERRIDES_URLS="\
-	https://github.com/SkorionOS/linux-skorion/releases/download/v7.2.8-sk2-1/linux-skchos-7.2.8.sk2-1-x86_64.pkg.tar.zst \
-	https://github.com/SkorionOS/linux-skorion/releases/download/v7.2.8-sk2-1/linux-skchos-headers-7.2.8.sk2-1-x86_64.pkg.tar.zst \
+	https://github.com/SkorionOS/linux-skorion/releases/download/v7.2.8-sk2-2/linux-skchos-7.2.8.sk2-2-x86_64.pkg.tar.zst \
+	https://github.com/SkorionOS/linux-skorion/releases/download/v7.2.8-sk2-2/linux-skchos-headers-7.2.8.sk2-2-x86_64.pkg.tar.zst \
 	https://archive.archlinux.org/packages/l/lib32-libxkbcommon/lib32-libxkbcommon-1.11.0-1-x86_64.pkg.tar.zst \
 	https://archive.archlinux.org/packages/l/libxkbcommon/libxkbcommon-1.11.0-1-x86_64.pkg.tar.zst \
 	https://archive.archlinux.org/packages/l/libxkbcommon-x11/libxkbcommon-x11-1.11.0-1-x86_64.pkg.tar.zst \
