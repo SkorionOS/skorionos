@@ -1,0 +1,11 @@
+# ONEXPLAYER3 volume release workaround (59 ordering fix)
+# The board EC omits release events for 0xae (volumedown) and 0xb0 (volumeup),
+# causing key repeats. This custom 59 rule only injects the two KEYBOARD_KEY
+# properties; all other existing mappings are preserved.
+# 60-evdev only calls its keyboard builtin when a hwdb lookup matches; with no
+# matching hwdb entry the builtin is skipped and force_release is never merged.
+# Deferred RUN executes after all standard rules finish, regardless of hwdb
+# match, and sees both injected volume properties plus any standard mappings,
+# so the existing keyboard builtin is explicitly queued here to guarantee it
+# runs. No IMPORT and no private HWDB property are used.
+ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", DRIVERS=="atkbd", PROGRAM=="/usr/bin/cat /sys/class/dmi/id/modalias", RESULT=="dmi:*:svnONE-NETBOOK:pnONEXPLAYER3:*", ENV{KEYBOARD_KEY_ae}="!volumedown", ENV{KEYBOARD_KEY_b0}="!volumeup", RUN{builtin}+="keyboard"
