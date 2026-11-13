@@ -18,7 +18,6 @@ export BASE_KDE_PACKAGES="\
 	kdeconnect \
 	kdeplasma-addons \
 	kfind \
-	kgamma \
 	kinfocenter \
 	konsole \
 	kpipewire \

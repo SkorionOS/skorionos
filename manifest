@@ -142,6 +142,15 @@ export PACKAGES="\
 "
 
 export PACKAGE_OVERRIDES_URLS="\
+	https://github.com/SkorionOS/skorion-packages/releases/download/lib32-mesa-26.2.4.sk-3-20261110/lib32-mesa-1--26.2.4.sk-3-x86_64.pkg.tar.zst \
+	https://github.com/SkorionOS/skorion-packages/releases/download/lib32-mesa-26.2.4.sk-3-20261110/lib32-opencl-mesa-1--26.2.4.sk-3-x86_64.pkg.tar.zst \
+	https://github.com/SkorionOS/skorion-packages/releases/download/lib32-mesa-26.2.4.sk-3-20261110/lib32-vulkan-intel-1--26.2.4.sk-3-x86_64.pkg.tar.zst \
+	https://github.com/SkorionOS/skorion-packages/releases/download/lib32-mesa-26.2.4.sk-3-20261110/lib32-vulkan-mesa-layers-1--26.2.4.sk-3-x86_64.pkg.tar.zst \
+	https://github.com/SkorionOS/skorion-packages/releases/download/lib32-mesa-26.2.4.sk-3-20261110/lib32-vulkan-mesa-implicit-layers-1--26.2.4.sk-3-x86_64.pkg.tar.zst \
+	https://github.com/SkorionOS/skorion-packages/releases/download/lib32-mesa-26.2.4.sk-3-20261110/lib32-vulkan-nouveau-1--26.2.4.sk-3-x86_64.pkg.tar.zst \
+	https://github.com/SkorionOS/skorion-packages/releases/download/lib32-mesa-26.2.4.sk-3-20261110/lib32-vulkan-radeon-1--26.2.4.sk-3-x86_64.pkg.tar.zst \
+	https://github.com/SkorionOS/skorion-packages/releases/download/lib32-mesa-26.2.4.sk-3-20261110/lib32-vulkan-swrast-1--26.2.4.sk-3-x86_64.pkg.tar.zst \
+	https://github.com/SkorionOS/skorion-packages/releases/download/lib32-mesa-26.2.4.sk-3-20261110/lib32-vulkan-virtio-1--26.2.4.sk-3-x86_64.pkg.tar.zst \
 	https://github.com/SkorionOS/linux-skorion/releases/download/v7.3.4-sk1-1/linux-skchos-7.3.4.sk1-1-x86_64.pkg.tar.zst \
 	https://github.com/SkorionOS/linux-skorion/releases/download/v7.3.4-sk1-1/linux-skchos-headers-7.3.4.sk1-1-x86_64.pkg.tar.zst \
 	https://archive.archlinux.org/packages/l/lib32-libxkbcommon/lib32-libxkbcommon-1.11.0-1-x86_64.pkg.tar.zst \
@@ -151,6 +160,15 @@ export PACKAGE_OVERRIDES_URLS="\
 "
 
 export PACKAGE_OVERRIDES="\
+	lib32-mesa \
+	lib32-opencl-mesa \
+	lib32-vulkan-intel \
+	lib32-vulkan-mesa-layers \
+	lib32-vulkan-mesa-implicit-layers \
+	lib32-vulkan-nouveau \
+	lib32-vulkan-radeon \
+	lib32-vulkan-swrast \
+	lib32-vulkan-virtio \
 	linux-skchos \
 	linux-skchos-headers \
 	lib32-libxkbcommon \
