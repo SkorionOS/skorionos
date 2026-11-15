@@ -1,130 +1,46 @@
 name: Sync to Mobile Cloud (139Yun)
-
 on:
-  # 自动触发：当release创建workflow完成时
-  workflow_run:
-    workflows:
-      - System image matrix pkg build
-      - Test CI
-    types: [completed]
-    
-  # 手动触发：支持指定tag参数
   workflow_dispatch:
     inputs:
-      tag_name:
-        description: '要同步的Release标签 (留空则处理最新版本)'
-        required: false
-        type: string
-      force_sync:
-        description: '强制重新同步 (即使已存在)'
-        required: false
-        type: boolean
-        default: false
-      use_batch_download:
-        description: '启用多线程批量下载模式'
-        required: false
-        type: boolean
-        default: true
-      download_threads:
-        description: '下载线程数'
-        required: false
-        type: string
-        default: '5'
-      transfer_threads:
-        description: '传输线程数'
-        required: false
-        type: string
-        default: '5'
-      table_language:
-        description: '表格语言 (zh/en)'
-        required: false
+      mode:
         type: choice
-        options:
-          - zh
-          - en
-        default: en
-      use_emoji:
-        description: '显示Emoji图标'
-        required: false
-        type: boolean
-        default: false
-
+        options: [audit, repair]
+        default: audit
+        required: true
+permissions:
+  contents: read
 concurrency:
   group: sync-to-mobile-cloud
   cancel-in-progress: false
-
 jobs:
-  sync-to-mobile-cloud:
+  repair-current-release:
     runs-on: ubuntu-latest
-    # 只在源workflow成功时运行，或者是手动触发
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
-    
+    timeout-minutes: 120
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Free Disk Space
-        uses: endersonmenezes/free-disk-space@v3  # Use @main for latest, @v3 for stable
-        with:
-          remove_android: true
-          remove_dotnet: true
-          remove_haskell: true
-          rm_cmd: "rmz"  # Use 'rmz' for faster deletion (default: 'rm')
-          rmz_version: "3.1.1"  # Required when rm_cmd is 'rmz'
-          testing: false
-
-      - name: Sync to Mobile Cloud
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CLOUD_PROVIDER: "mobile"
-          CLOUD_AUTH: ${{ secrets.MOBILE_CLOUD_AUTHORIZATION }}
-          TARGET_FOLDER: "Public/img"
-          MOBILE_CLOUD_AUTHORIZATION: ${{ secrets.MOBILE_CLOUD_AUTHORIZATION }}
-          # 下载模式配置环境变量
-          USE_BATCH_DOWNLOAD: ${{ inputs.use_batch_download }}
-          BATCH_DOWNLOAD_THREADS: ${{ inputs.download_threads }}
-          BATCH_TRANSFER_THREADS: ${{ inputs.transfer_threads }}
-          TABLE_LANGUAGE: ${{ inputs.table_language }}
-          USE_EMOJI: ${{ inputs.use_emoji }}
-          FORCE_SYNC: ${{ inputs.force_sync }}
+      - uses: actions/checkout@v4
+      - name: Start isolated temporary Alist
+        shell: bash
         run: |
-          # 检查必需的环境变量
-          if [ -z "$CLOUD_AUTH" ]; then
-            echo "❌ 未找到移动云盘认证信息"
-            echo "请在仓库Secrets中设置 MOBILE_CLOUD_AUTHORIZATION"
-            exit 1
-          fi
-          
-          # 确定参数
-          TAG_NAME="${{ inputs.tag_name }}"
-
-          USE_BATCH_DOWNLOAD="${USE_BATCH_DOWNLOAD:-true}"  # true: 多线程批量下载, false: 单文件下载
-          BATCH_DOWNLOAD_THREADS="${BATCH_DOWNLOAD_THREADS:-5}"   # 批量下载线程数
-          BATCH_TRANSFER_THREADS="${BATCH_TRANSFER_THREADS:-5}"   # 批量传输线程数
-          TABLE_LANGUAGE="${TABLE_LANGUAGE:-en}"      # 表格语言: zh(中文) 或 en(英文)
-          USE_EMOJI="${USE_EMOJI:-true}"           # 是否在状态中显示emoji
-          FORCE_SYNC="${FORCE_SYNC:-false}"       # 强制同步模式
-
-          export USE_BATCH_DOWNLOAD
-          export BATCH_DOWNLOAD_THREADS
-          export BATCH_TRANSFER_THREADS
-          export TABLE_LANGUAGE
-          export USE_EMOJI
-          export FORCE_SYNC
-          
-          # 显示配置
-          echo "🔧 同步配置:"
-          echo "  📱 云盘类型: 移动云盘(139Yun)"
-          echo "  📁 Release标签: ${TAG_NAME:-'最新版本'}"
-          echo "  📂 目标路径: $TARGET_FOLDER"
-          echo "  🔄 强制同步: $FORCE_SYNC"
-          echo "  ⚡ 批量下载: $USE_BATCH_DOWNLOAD"
-          echo "  📥 下载线程: $BATCH_DOWNLOAD_THREADS"
-          echo "  📤 传输线程: $BATCH_TRANSFER_THREADS"
-          echo "  🌐 表格语言: $TABLE_LANGUAGE"
-          echo "  😊 显示Emoji: $USE_EMOJI"
-          echo ""
-          
-          # 运行同步脚本
-          ./.github/scripts/cloud-sync.sh "$TAG_NAME"
-
+          set -euo pipefail
+          docker run -d --name=temp-alist -p 127.0.0.1:5244:5244 xhofe/alist:v3.45.0 >/dev/null
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:5244/ping >/dev/null 2>&1 && break; sleep 2; done
+          PASSWORD=$(openssl rand -hex 24)
+          echo "::add-mask::$PASSWORD"
+          docker exec temp-alist ./alist admin set "$PASSWORD" >/dev/null 2>&1
+          echo "ALIST_ADMIN_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
+      - name: Audit or repair only current release deltas
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MOBILE_CLOUD_AUTHORIZATION: ${{ secrets.MOBILE_CLOUD_AUTHORIZATION }}
+          REPAIR_MODE: ${{ inputs.mode }}
+        run: python3 .github/scripts/mobile-repair-current-release.py
+      - name: Save sanitized audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-repair-audit
+          path: /tmp/mobile-repair-report.json
+          if-no-files-found: warn
+      - name: Remove isolated temporary service
+        if: always()
+        run: docker rm -f temp-alist >/dev/null 2>&1 || true
