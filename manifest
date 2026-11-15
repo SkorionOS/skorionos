@@ -151,8 +151,8 @@ export PACKAGE_OVERRIDES_URLS="\
 	https://github.com/SkorionOS/skorion-packages/releases/download/lib32-mesa-26.2.4.sk-3-20261110/lib32-vulkan-radeon-1--26.2.4.sk-3-x86_64.pkg.tar.zst \
 	https://github.com/SkorionOS/skorion-packages/releases/download/lib32-mesa-26.2.4.sk-3-20261110/lib32-vulkan-swrast-1--26.2.4.sk-3-x86_64.pkg.tar.zst \
 	https://github.com/SkorionOS/skorion-packages/releases/download/lib32-mesa-26.2.4.sk-3-20261110/lib32-vulkan-virtio-1--26.2.4.sk-3-x86_64.pkg.tar.zst \
-	https://github.com/SkorionOS/linux-skorion/releases/download/v7.3.4-sk1-1/linux-skchos-7.3.4.sk1-1-x86_64.pkg.tar.zst \
-	https://github.com/SkorionOS/linux-skorion/releases/download/v7.3.4-sk1-1/linux-skchos-headers-7.3.4.sk1-1-x86_64.pkg.tar.zst \
+	https://github.com/SkorionOS/linux-skorion/releases/download/v7.3.4-sk1-2/linux-skchos-7.3.4.sk1-2-x86_64.pkg.tar.zst \
+	https://github.com/SkorionOS/linux-skorion/releases/download/v7.3.4-sk1-2/linux-skchos-headers-7.3.4.sk1-2-x86_64.pkg.tar.zst \
 	https://archive.archlinux.org/packages/l/lib32-libxkbcommon/lib32-libxkbcommon-1.11.0-1-x86_64.pkg.tar.zst \
 	https://archive.archlinux.org/packages/l/libxkbcommon/libxkbcommon-1.11.0-1-x86_64.pkg.tar.zst \
 	https://archive.archlinux.org/packages/l/libxkbcommon-x11/libxkbcommon-x11-1.11.0-1-x86_64.pkg.tar.zst \
