@@ -1,7 +1,7 @@
 [Unit]
 Description=SkorionOS DNS resolver setup
 After=systemd-resolved.service
-Before=NetworkManager.service
+Before=NetworkManager.service systemd-user-sessions.service
 
 [Service]
 Type=oneshot

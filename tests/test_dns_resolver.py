@@ -42,21 +42,31 @@ def run_helper(configure_args, path_with_fake_systemctl=None):
 
 
 class FakeSystemctl:
-	def __init__(self, base, enabled=True, active=True):
+	def __init__(self, base, enabled=True, active=True, reenable_failure=False):
 		self.dir = os.path.join(base, "bin")
 		os.makedirs(self.dir, exist_ok=True)
 		self.enabled = enabled
 		self.active = active
+		self.log = os.path.join(base, "systemctl.log")
 		path = os.path.join(self.dir, "systemctl")
 		with open(path, "w") as f:
+			f.write("#!/bin/bash\n")
+			f.write(f"printf '%s\\n' \"$*\" >> {self.log!r}\n")
 			f.write(
-				"#!/bin/bash\n"
-				"verb=; for a in \"$@\"; do case \"$a\" in is-enabled|is-active) verb=\"$a\";; esac; done\n"
+				"verb=; for a in \"$@\"; do case \"$a\" in is-enabled|is-active|reenable|disable) verb=\"$a\";; esac; done\n"
 			)
 			f.write(f"if [ \"$verb\" = is-enabled ]; then exit {'0' if enabled else '1'}; fi\n")
 			f.write(f"if [ \"$verb\" = is-active ]; then exit {'0' if active else '1'}; fi\n")
+			f.write(f"if [ \"$verb\" = reenable ]; then exit {'1' if reenable_failure else '0'}; fi\n")
+			f.write("if [ \"$verb\" = disable ]; then exit 0; fi\n")
 			f.write("exit 1\n")
 		os.chmod(path, 0o755)
+
+	def calls(self):
+		if not os.path.exists(self.log):
+			return []
+		with open(self.log) as f:
+			return [line.rstrip("\n") for line in f if line.strip()]
 
 
 class MigrationTests(unittest.TestCase):
@@ -163,8 +173,8 @@ class HelperTests(unittest.TestCase):
 		with open(self.target, "w") as f:
 			f.write("nameserver 192.0.2.53\n")
 
-	def fake(self, enabled=True, active=True):
-		return FakeSystemctl(self.tmp.name, enabled=enabled, active=active).dir
+	def fake(self, enabled=True, active=True, reenable_failure=False):
+		return FakeSystemctl(self.tmp.name, enabled=enabled, active=active, reenable_failure=reenable_failure).dir
 
 	def backup(self):
 		return self.resolver + ".skorionos-backup"
@@ -259,6 +269,89 @@ class HelperTests(unittest.TestCase):
 		self.assertTrue(os.path.isdir(self.resolver))
 		self.assertFalse(os.path.exists(self.backup()))
 
+	def _make_config_files(self):
+		nm_conf = os.path.join(self.tmp.name, "NetworkManager", "conf.d", "20-systemd-resolved.conf")
+		resolved_conf = os.path.join(self.tmp.name, "systemd", "resolved.conf.d", "20-skorionos.conf")
+		os.makedirs(os.path.dirname(nm_conf))
+		os.makedirs(os.path.dirname(resolved_conf))
+		nm_bytes = b"[main]\ndns=systemd-resolved\n"
+		resolved_bytes = b"[Resolve]\nDNS=192.0.2.53\n"
+		old = 1000000000
+		for path, data in ((nm_conf, nm_bytes), (resolved_conf, resolved_bytes)):
+			with open(path, "wb") as f:
+				f.write(data)
+			os.utime(path, (old, old))
+		return nm_conf, resolved_conf, nm_bytes, resolved_bytes, old
+
+	def test_already_correct_link_reenables_then_disables(self):
+		os.symlink(self.target, self.resolver)
+		inode = os.lstat(self.resolver).st_ino
+		fake = FakeSystemctl(self.tmp.name, enabled=True, active=True)
+		result = run_helper((self.resolver, self.target), fake.dir)
+		self.assertEqual(result.returncode, 0, result.stderr)
+		self.assertTrue(os.path.islink(self.resolver))
+		self.assertEqual(os.readlink(self.resolver), self.target)
+		self.assertEqual(os.lstat(self.resolver).st_ino, inode)
+		argv = [c.split() for c in fake.calls()]
+		verbs = [a[0] for a in argv]
+		self.assertIn("reenable", verbs)
+		idx_reenable = verbs.index("reenable")
+		idx_disable = verbs.index("disable")
+		self.assertGreater(idx_disable, idx_reenable)
+		self.assertEqual(
+			argv[idx_reenable],
+			["reenable", "--no-reload", "systemd-resolved.service"],
+		)
+		self.assertEqual(
+			argv[idx_disable],
+			["disable", "--no-reload", "skorion-dns-resolver.service"],
+		)
+		self.assertFalse(os.path.exists(self.backup()))
+
+	def test_reenable_failure_preserves_original(self):
+		original = b"nameserver 192.0.2.1\n"
+		with open(self.resolver, "wb") as f:
+			f.write(original)
+		fake = FakeSystemctl(self.tmp.name, enabled=True, active=True, reenable_failure=True)
+		result = run_helper((self.resolver, self.target), fake.dir)
+		self.assertNotEqual(result.returncode, 0)
+		self.assertFalse(os.path.islink(self.resolver))
+		with open(self.resolver, "rb") as f:
+			self.assertEqual(f.read(), original)
+		self.assertFalse(os.path.exists(self.backup()))
+		verbs = [c.split()[0] for c in fake.calls()]
+		self.assertNotIn("disable", verbs)
+
+	def test_config_files_copied_up_on_success(self):
+		nm_conf, resolved_conf, nm_bytes, resolved_bytes, old = self._make_config_files()
+		with open(self.resolver, "w") as f:
+			f.write("nameserver 192.0.2.1\n")
+		result = run_helper((self.resolver, self.target), self.fake())
+		self.assertEqual(result.returncode, 0, result.stderr)
+		for path, expected in ((nm_conf, nm_bytes), (resolved_conf, resolved_bytes)):
+			with open(path, "rb") as f:
+				self.assertEqual(f.read(), expected)
+			self.assertGreater(os.stat(path).st_mtime, old)
+
+	def test_touch_failure_leaves_resolver_and_unit(self):
+		original = b"nameserver 192.0.2.1\n"
+		with open(self.resolver, "wb") as f:
+			f.write(original)
+		self._make_config_files()
+		fake = FakeSystemctl(self.tmp.name, enabled=True, active=True)
+		touch = os.path.join(fake.dir, "touch")
+		with open(touch, "w") as f:
+			f.write("#!/bin/bash\nexit 1\n")
+		os.chmod(touch, 0o755)
+		result = run_helper((self.resolver, self.target), fake.dir)
+		self.assertNotEqual(result.returncode, 0)
+		self.assertFalse(os.path.islink(self.resolver))
+		with open(self.resolver, "rb") as f:
+			self.assertEqual(f.read(), original)
+		self.assertFalse(os.path.exists(self.backup()))
+		verbs = [c.split()[0] for c in fake.calls()]
+		self.assertNotIn("disable", verbs)
+
 
 class OrderingAndConfigTests(unittest.TestCase):
 	def test_fresh_link_after_download(self):
@@ -289,6 +382,7 @@ class OrderingAndConfigTests(unittest.TestCase):
 		after = parser.get("Unit", "After").split()
 		before = parser.get("Unit", "Before").split()
 		self.assertIn("systemd-resolved.service", after)
+		self.assertIn("systemd-user-sessions.service", before)
 		self.assertIn("NetworkManager.service", before)
 		self.assertEqual(parser.get("Service", "Type"), "oneshot")
 		self.assertEqual(parser.get("Service", "ExecStart"), "/usr/lib/skorionos/dns-resolver-setup")

@@ -25,7 +25,34 @@ configure_resolver() {
 		return 1
 	fi
 
+	# Promote native enablement and aliases into the writable /etc layer before
+	# inspecting or backing up state; image-owned lower links cannot satisfy this.
+	if ! systemctl reenable --no-reload systemd-resolved.service; then
+		echo "dns-resolver-setup: failed to reenable systemd-resolved.service; not switching" >&2
+		return 1
+	fi
+
+	# Touch existing config files so their current content copies up into the
+	# persistent overlay; do not alter contents and do not follow user symlinks.
+	local etc_dir
+	etc_dir=$(dirname "$resolver")
+	local nm_conf="$etc_dir/NetworkManager/conf.d/20-systemd-resolved.conf"
+	local resolved_conf="$etc_dir/systemd/resolved.conf.d/20-skorionos.conf"
+	local f
+	for f in "$nm_conf" "$resolved_conf"; do
+		if [ -f "$f" ] && [ ! -L "$f" ]; then
+			if ! touch "$f"; then
+				echo "dns-resolver-setup: failed to touch '$f'; not switching" >&2
+				return 1
+			fi
+		fi
+	done
+
 	if [ -L "$resolver" ] && [ "$(readlink "$resolver")" = "$target" ]; then
+		if ! systemctl disable --no-reload skorion-dns-resolver.service; then
+			echo "dns-resolver-setup: failed to disable skorion-dns-resolver.service" >&2
+			return 1
+		fi
 		return 0
 	fi
 
@@ -40,6 +67,11 @@ configure_resolver() {
 		echo "dns-resolver-setup: failed to link '$resolver' to '$target'" >&2
 		return 1
 	}
+
+	if ! systemctl disable --no-reload skorion-dns-resolver.service; then
+		echo "dns-resolver-setup: failed to disable skorion-dns-resolver.service" >&2
+		return 1
+	fi
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
