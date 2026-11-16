@@ -306,6 +306,7 @@ class HelperTests(unittest.TestCase):
 		socket_target_before = os.readlink(self.native_socket_link)
 		offsets = {}
 		for l in (self.native_service_link, self.native_socket_link):
+			os.utime(l, (1_000_000_000, 1_000_000_000), follow_symlinks=False)
 			st = os.lstat(l)
 			offsets[l] = (st.st_ino, st.st_mtime_ns)
 		fake = FakeSystemctl(self.tmp.name, enabled=True, active=True)
