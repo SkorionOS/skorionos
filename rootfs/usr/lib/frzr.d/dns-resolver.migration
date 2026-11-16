@@ -1,0 +1,22 @@
+#!/bin/bash
+
+post_install() {
+	local mount_root="$1"
+	local etc_dir
+
+	if [ -z "$mount_root" ] || [ ! -d "$mount_root" ]; then
+		echo "dns-resolver.migration: invalid or missing mount root: '$mount_root'" >&2
+		return 1
+	fi
+
+	etc_dir="$mount_root/etc"
+	if [ ! -d "$etc_dir" ]; then
+		echo "dns-resolver.migration: missing etc directory: '$etc_dir'" >&2
+		return 1
+	fi
+
+	ln -sfnT /usr/lib/systemd/resolv.conf "$etc_dir/resolv.conf" || {
+		echo "dns-resolver.migration: failed to link resolv.conf in '$etc_dir'" >&2
+		return 1
+	}
+}

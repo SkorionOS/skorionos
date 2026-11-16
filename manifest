@@ -261,6 +261,7 @@ export SERVICES="\
 	sddm \
 	steamos-manager \
 	sshd \
+	systemd-resolved \
 	systemd-timesyncd \
 	sk-bind-mount \
 	sk-chos-daemon \
