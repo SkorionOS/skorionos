@@ -27,15 +27,18 @@ configure_resolver() {
 
 	# Promote native enablement and aliases into the writable /etc layer before
 	# inspecting or backing up state; image-owned lower links cannot satisfy this.
-	if ! systemctl reenable --no-reload systemd-resolved.service; then
-		echo "dns-resolver-setup: failed to reenable systemd-resolved.service; not switching" >&2
+	# Copy-up is metadata-only (touch -h) so native targets are preserved and the
+	# service is never disabled; a failure leaves DNS unchanged and can retry.
+	local etc_dir
+	etc_dir=$(dirname "$resolver")
+	local systemd_system="$etc_dir/systemd/system"
+	if ! find "$systemd_system" -type l \( -lname '*/systemd-resolved.service' -o -lname '*/systemd-resolved-*.socket' \) -exec touch -h -- {} +; then
+		echo "dns-resolver-setup: failed to promote native systemd-resolved links; not switching" >&2
 		return 1
 	fi
 
 	# Touch existing config files so their current content copies up into the
 	# persistent overlay; do not alter contents and do not follow user symlinks.
-	local etc_dir
-	etc_dir=$(dirname "$resolver")
 	local nm_conf="$etc_dir/NetworkManager/conf.d/20-systemd-resolved.conf"
 	local resolved_conf="$etc_dir/systemd/resolved.conf.d/20-skorionos.conf"
 	local f
@@ -57,8 +60,26 @@ configure_resolver() {
 	fi
 
 	if { [ -e "$resolver" ] || [ -L "$resolver" ]; } && [ ! -e "$backup" ] && [ ! -L "$backup" ]; then
-		if ! cp -a --no-dereference "$resolver" "$backup"; then
+		local work
+		if ! work=$(mktemp -d "${backup}.tmp.XXXXXX"); then
+			echo "dns-resolver-setup: failed to create backup work dir for '$resolver'; not switching" >&2
+			return 1
+		fi
+		if ! cp -a --no-dereference -- "$resolver" "$work/original"; then
+			rm -f -- "$work/original"
+			rmdir -- "$work" 2>/dev/null
 			echo "dns-resolver-setup: failed to back up '$resolver'; not switching" >&2
+			return 1
+		fi
+		if ! mv -nT -- "$work/original" "$backup"; then
+			rm -f -- "$work/original"
+			rmdir -- "$work" 2>/dev/null
+			echo "dns-resolver-setup: failed to publish backup '$backup'; not switching" >&2
+			return 1
+		fi
+		rm -f -- "$work/original"
+		if ! rmdir -- "$work"; then
+			echo "dns-resolver-setup: failed to clean backup work dir for '$resolver'; not switching" >&2
 			return 1
 		fi
 	fi

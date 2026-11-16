@@ -172,6 +172,20 @@ class HelperTests(unittest.TestCase):
 		self.target = os.path.join(self.tmp.name, "resolv-target.conf")
 		with open(self.target, "w") as f:
 			f.write("nameserver 192.0.2.53\n")
+		# Native systemd-resolved enablement fixtures under /etc/systemd/system,
+		# anchored to dirname(resolver) so the helper's etc_dir resolves here.
+		self.etc_dir = os.path.dirname(self.resolver)
+		self.systemd_system = os.path.join(self.etc_dir, "systemd", "system")
+		self.native_service_link = os.path.join(
+			self.systemd_system, "sysinit.target.wants", "systemd-resolved.service"
+		)
+		os.makedirs(os.path.dirname(self.native_service_link), exist_ok=True)
+		os.symlink("/usr/lib/systemd/system/systemd-resolved.service", self.native_service_link)
+		self.native_socket_link = os.path.join(
+			self.systemd_system, "sockets.target.wants", "systemd-resolved-varlink.socket"
+		)
+		os.makedirs(os.path.dirname(self.native_socket_link), exist_ok=True)
+		os.symlink("/usr/lib/systemd/system/systemd-resolved-varlink.socket", self.native_socket_link)
 
 	def fake(self, enabled=True, active=True, reenable_failure=False):
 		return FakeSystemctl(self.tmp.name, enabled=enabled, active=active, reenable_failure=reenable_failure).dir
@@ -283,9 +297,17 @@ class HelperTests(unittest.TestCase):
 			os.utime(path, (old, old))
 		return nm_conf, resolved_conf, nm_bytes, resolved_bytes, old
 
-	def test_already_correct_link_reenables_then_disables(self):
+	def test_already_correct_link_promotes_native_links(self):
+		# New contract: never reenable/disable-first for native resolved; only
+		# metadata-touch existing native links and disable the migration unit.
 		os.symlink(self.target, self.resolver)
 		inode = os.lstat(self.resolver).st_ino
+		native_target_before = os.readlink(self.native_service_link)
+		socket_target_before = os.readlink(self.native_socket_link)
+		offsets = {}
+		for l in (self.native_service_link, self.native_socket_link):
+			st = os.lstat(l)
+			offsets[l] = (st.st_ino, st.st_mtime_ns)
 		fake = FakeSystemctl(self.tmp.name, enabled=True, active=True)
 		result = run_helper((self.resolver, self.target), fake.dir)
 		self.assertEqual(result.returncode, 0, result.stderr)
@@ -294,33 +316,62 @@ class HelperTests(unittest.TestCase):
 		self.assertEqual(os.lstat(self.resolver).st_ino, inode)
 		argv = [c.split() for c in fake.calls()]
 		verbs = [a[0] for a in argv]
-		self.assertIn("reenable", verbs)
-		idx_reenable = verbs.index("reenable")
-		idx_disable = verbs.index("disable")
-		self.assertGreater(idx_disable, idx_reenable)
-		self.assertEqual(
-			argv[idx_reenable],
-			["reenable", "--no-reload", "systemd-resolved.service"],
-		)
-		self.assertEqual(
-			argv[idx_disable],
-			["disable", "--no-reload", "skorion-dns-resolver.service"],
-		)
+		self.assertNotIn("reenable", verbs)
+		# Only the migration unit may be disabled, and only at the end.
+		disables = [a for a in argv if a and a[0] == "disable"]
+		self.assertEqual(len(disables), 1, argv)
+		self.assertEqual(disables[0], ["disable", "--no-reload", "skorion-dns-resolver.service"])
+		self.assertEqual(verbs[-1], "disable")
+		# Native links must not be recreated; inode unchanged, target unchanged,
+		# but metadata touched (mtime advanced).
+		self.assertEqual(os.readlink(self.native_service_link), native_target_before)
+		self.assertEqual(os.readlink(self.native_socket_link), socket_target_before)
+		for l, (iod, before_mtime) in offsets.items():
+			st = os.lstat(l)
+			self.assertEqual(st.st_ino, iod, l)
+			self.assertGreater(st.st_mtime_ns, before_mtime, l)
 		self.assertFalse(os.path.exists(self.backup()))
 
-	def test_reenable_failure_preserves_original(self):
+	def test_native_link_promotion_failure_retries(self):
+		# New contract must not depend on reenable at all. Simulate touch -h
+		# failing once via a PATH wrapper, then retry after removing wrapper.
 		original = b"nameserver 192.0.2.1\n"
 		with open(self.resolver, "wb") as f:
 			f.write(original)
 		fake = FakeSystemctl(self.tmp.name, enabled=True, active=True, reenable_failure=True)
+		native_target_before = os.readlink(self.native_service_link)
+		native_inode_before = os.lstat(self.native_service_link).st_ino
+		fail_marker = os.path.join(self.tmp.name, "touch-h-failed")
+		touch = os.path.join(fake.dir, "touch")
+		with open(touch, "w") as f:
+			f.write("#!/bin/bash\n")
+			f.write("if [ \"$1\" = -h ]; then\n")
+			f.write(f"  if [ ! -e {fail_marker!r} ]; then : > {fail_marker!r}; exit 1; fi\n")
+			f.write("fi\n")
+			f.write("exec /usr/bin/touch \"$@\"\n")
+		os.chmod(touch, 0o755)
 		result = run_helper((self.resolver, self.target), fake.dir)
 		self.assertNotEqual(result.returncode, 0)
 		self.assertFalse(os.path.islink(self.resolver))
 		with open(self.resolver, "rb") as f:
 			self.assertEqual(f.read(), original)
 		self.assertFalse(os.path.exists(self.backup()))
+		self.assertEqual(os.readlink(self.native_service_link), native_target_before)
+		self.assertEqual(os.lstat(self.native_service_link).st_ino, native_inode_before)
 		verbs = [c.split()[0] for c in fake.calls()]
+		self.assertNotIn("reenable", verbs)
 		self.assertNotIn("disable", verbs)
+		# Second run without failing wrapper must succeed without reenable.
+		os.unlink(touch)
+		result = run_helper((self.resolver, self.target), fake.dir)
+		self.assertEqual(result.returncode, 0, result.stderr)
+		self.assertTrue(os.path.islink(self.resolver))
+		self.assertEqual(os.readlink(self.resolver), self.target)
+		self.assertTrue(os.path.exists(self.backup()))
+		verbs = [c.split()[0] for c in fake.calls()]
+		self.assertNotIn("reenable", verbs)
+		self.assertIn("disable", verbs)
+		self.assertEqual(os.readlink(self.native_service_link), native_target_before)
 
 	def test_config_files_copied_up_on_success(self):
 		nm_conf, resolved_conf, nm_bytes, resolved_bytes, old = self._make_config_files()
@@ -340,8 +391,12 @@ class HelperTests(unittest.TestCase):
 		self._make_config_files()
 		fake = FakeSystemctl(self.tmp.name, enabled=True, active=True)
 		touch = os.path.join(fake.dir, "touch")
+		# Delegate -h (native-link metadata promotion) to real touch; fail only
+		# the ordinary config-file touch so this case stays specific.
 		with open(touch, "w") as f:
-			f.write("#!/bin/bash\nexit 1\n")
+			f.write("#!/bin/bash\n")
+			f.write("if [ \"$1\" = -h ]; then exec /usr/bin/touch \"$@\"; fi\n")
+			f.write("exit 1\n")
 		os.chmod(touch, 0o755)
 		result = run_helper((self.resolver, self.target), fake.dir)
 		self.assertNotEqual(result.returncode, 0)
@@ -351,6 +406,76 @@ class HelperTests(unittest.TestCase):
 		self.assertFalse(os.path.exists(self.backup()))
 		verbs = [c.split()[0] for c in fake.calls()]
 		self.assertNotIn("disable", verbs)
+		self.assertNotIn("reenable", verbs)
+
+	def test_partial_cp_failure_then_retry(self):
+		# Partial cp to final backup destination must not be accepted as a
+		# completed backup; retry after removing fake cp must succeed.
+		original = b"nameserver 192.0.2.1\nsearch partial.test\n"
+		with open(self.resolver, "wb") as f:
+			f.write(original)
+		fake = FakeSystemctl(self.tmp.name, enabled=True, active=True)
+		cp = os.path.join(fake.dir, "cp")
+		with open(cp, "w") as f:
+			f.write("#!/bin/bash\n")
+			f.write("last=\"\"; for a in \"$@\"; do last=\"$a\"; done\n")
+			f.write("printf 'partial' > \"$last\"\n")
+			f.write("exit 1\n")
+		os.chmod(cp, 0o755)
+		with self.subTest(phase="first"):
+			result = run_helper((self.resolver, self.target), fake.dir)
+			self.assertNotEqual(result.returncode, 0)
+			self.assertFalse(os.path.islink(self.resolver))
+			with open(self.resolver, "rb") as f:
+				self.assertEqual(f.read(), original)
+			self.assertFalse(os.path.exists(self.backup()))
+			verbs = [c.split()[0] for c in fake.calls()]
+			self.assertNotIn("disable", verbs)
+		os.unlink(cp)
+		with self.subTest(phase="retry"):
+			result = run_helper((self.resolver, self.target), fake.dir)
+			self.assertEqual(result.returncode, 0, result.stderr)
+			self.assertTrue(os.path.islink(self.resolver))
+			self.assertEqual(os.readlink(self.resolver), self.target)
+			self.assertTrue(os.path.isfile(self.backup()))
+			with open(self.backup(), "rb") as f:
+				self.assertEqual(f.read(), original)
+
+	def test_interrupted_temp_state_ignored(self):
+		# A leftover private tempdir from an interrupted run must not be treated
+		# as a completed backup; healthy run must create complete backup.
+		original = b"nameserver 192.0.2.1\n"
+		with open(self.resolver, "wb") as f:
+			f.write(original)
+		interrupted = self.backup() + ".tmp.interrupted"
+		os.makedirs(interrupted)
+		with open(os.path.join(interrupted, "original"), "wb") as f:
+			f.write(b"partial bytes from interrupted run\n")
+		result = run_helper((self.resolver, self.target), self.fake())
+		self.assertEqual(result.returncode, 0, result.stderr)
+		self.assertTrue(os.path.islink(self.resolver))
+		self.assertEqual(os.readlink(self.resolver), self.target)
+		self.assertTrue(os.path.isfile(self.backup()))
+		with open(self.backup(), "rb") as f:
+			self.assertEqual(f.read(), original)
+		# Orphan is left in place (no recursive deletion by helper).
+		self.assertTrue(os.path.isdir(interrupted))
+
+	def test_interrupted_temp_state_preserves_completed_backup(self):
+		# Existing completed backup must remain untouched even with orphan temp.
+		with open(self.resolver, "wb") as f:
+			f.write(b"nameserver 192.0.2.1\n")
+		with open(self.backup(), "wb") as f:
+			f.write(b"pre-existing-backup\n")
+		interrupted = self.backup() + ".tmp.interrupted"
+		os.makedirs(interrupted)
+		with open(os.path.join(interrupted, "original"), "wb") as f:
+			f.write(b"partial\n")
+		result = run_helper((self.resolver, self.target), self.fake())
+		self.assertEqual(result.returncode, 0, result.stderr)
+		self.assertTrue(os.path.islink(self.resolver))
+		with open(self.backup(), "rb") as f:
+			self.assertEqual(f.read(), b"pre-existing-backup\n")
 
 
 class OrderingAndConfigTests(unittest.TestCase):
