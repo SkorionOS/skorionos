@@ -1,0 +1,47 @@
+#!/bin/bash
+
+configure_resolver() {
+	local resolver="$1"
+	local target="$2"
+	local backup="${resolver}.skorionos-backup"
+
+	if ! systemctl is-enabled --quiet systemd-resolved.service; then
+		echo "dns-resolver-setup: systemd-resolved.service not enabled; preserving '$resolver'" >&2
+		return 0
+	fi
+
+	if ! systemctl is-active --quiet systemd-resolved.service; then
+		echo "dns-resolver-setup: systemd-resolved.service not active; preserving '$resolver'" >&2
+		return 0
+	fi
+
+	if [ ! -e "$target" ] || [ ! -r "$target" ]; then
+		echo "dns-resolver-setup: resolver target '$target' missing or unreadable; preserving '$resolver'" >&2
+		return 0
+	fi
+
+	if [ -d "$resolver" ] && [ ! -L "$resolver" ]; then
+		echo "dns-resolver-setup: '$resolver' is a directory; refusing to replace" >&2
+		return 1
+	fi
+
+	if [ -L "$resolver" ] && [ "$(readlink "$resolver")" = "$target" ]; then
+		return 0
+	fi
+
+	if { [ -e "$resolver" ] || [ -L "$resolver" ]; } && [ ! -e "$backup" ] && [ ! -L "$backup" ]; then
+		if ! cp -a --no-dereference "$resolver" "$backup"; then
+			echo "dns-resolver-setup: failed to back up '$resolver'; not switching" >&2
+			return 1
+		fi
+	fi
+
+	ln -sfnT "$target" "$resolver" || {
+		echo "dns-resolver-setup: failed to link '$resolver' to '$target'" >&2
+		return 1
+	}
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+	configure_resolver /etc/resolv.conf /usr/lib/systemd/resolv.conf
+fi

@@ -266,6 +266,7 @@ export SERVICES="\
 	sk-bind-mount \
 	sk-chos-daemon \
 	sk-chos-tool-autoupdate.timer \
+	skorion-dns-resolver \
 	sk-setup-kernel-options \
 	sk-resume \
 "
