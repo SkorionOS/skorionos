@@ -261,10 +261,12 @@ export SERVICES="\
 	sddm \
 	steamos-manager \
 	sshd \
+	systemd-resolved \
 	systemd-timesyncd \
 	sk-bind-mount \
 	sk-chos-daemon \
 	sk-chos-tool-autoupdate.timer \
+	skorion-dns-resolver \
 	sk-setup-kernel-options \
 	sk-resume \
 "

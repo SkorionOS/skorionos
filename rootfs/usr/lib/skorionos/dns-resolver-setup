@@ -1,0 +1,100 @@
+#!/bin/bash
+
+configure_resolver() {
+	local resolver="$1"
+	local target="$2"
+	local backup="${resolver}.skorionos-backup"
+
+	if ! systemctl is-enabled --quiet systemd-resolved.service; then
+		echo "dns-resolver-setup: systemd-resolved.service not enabled; preserving '$resolver'" >&2
+		return 0
+	fi
+
+	if ! systemctl is-active --quiet systemd-resolved.service; then
+		echo "dns-resolver-setup: systemd-resolved.service not active; preserving '$resolver'" >&2
+		return 0
+	fi
+
+	if [ ! -e "$target" ] || [ ! -r "$target" ]; then
+		echo "dns-resolver-setup: resolver target '$target' missing or unreadable; preserving '$resolver'" >&2
+		return 0
+	fi
+
+	if [ -d "$resolver" ] && [ ! -L "$resolver" ]; then
+		echo "dns-resolver-setup: '$resolver' is a directory; refusing to replace" >&2
+		return 1
+	fi
+
+	# Promote native enablement and aliases into the writable /etc layer before
+	# inspecting or backing up state; image-owned lower links cannot satisfy this.
+	# Copy-up is metadata-only (touch -h) so native targets are preserved and the
+	# service is never disabled; a failure leaves DNS unchanged and can retry.
+	local etc_dir
+	etc_dir=$(dirname "$resolver")
+	local systemd_system="$etc_dir/systemd/system"
+	if ! find "$systemd_system" -type l \( -lname '*/systemd-resolved.service' -o -lname '*/systemd-resolved-*.socket' \) -exec touch -h -- {} +; then
+		echo "dns-resolver-setup: failed to promote native systemd-resolved links; not switching" >&2
+		return 1
+	fi
+
+	# Touch existing config files so their current content copies up into the
+	# persistent overlay; do not alter contents and do not follow user symlinks.
+	local nm_conf="$etc_dir/NetworkManager/conf.d/20-systemd-resolved.conf"
+	local resolved_conf="$etc_dir/systemd/resolved.conf.d/20-skorionos.conf"
+	local f
+	for f in "$nm_conf" "$resolved_conf"; do
+		if [ -f "$f" ] && [ ! -L "$f" ]; then
+			if ! touch "$f"; then
+				echo "dns-resolver-setup: failed to touch '$f'; not switching" >&2
+				return 1
+			fi
+		fi
+	done
+
+	if [ -L "$resolver" ] && [ "$(readlink "$resolver")" = "$target" ]; then
+		if ! systemctl disable --no-reload skorion-dns-resolver.service; then
+			echo "dns-resolver-setup: failed to disable skorion-dns-resolver.service" >&2
+			return 1
+		fi
+		return 0
+	fi
+
+	if { [ -e "$resolver" ] || [ -L "$resolver" ]; } && [ ! -e "$backup" ] && [ ! -L "$backup" ]; then
+		local work
+		if ! work=$(mktemp -d "${backup}.tmp.XXXXXX"); then
+			echo "dns-resolver-setup: failed to create backup work dir for '$resolver'; not switching" >&2
+			return 1
+		fi
+		if ! cp -a --no-dereference -- "$resolver" "$work/original"; then
+			rm -f -- "$work/original"
+			rmdir -- "$work" 2>/dev/null
+			echo "dns-resolver-setup: failed to back up '$resolver'; not switching" >&2
+			return 1
+		fi
+		if ! mv -nT -- "$work/original" "$backup"; then
+			rm -f -- "$work/original"
+			rmdir -- "$work" 2>/dev/null
+			echo "dns-resolver-setup: failed to publish backup '$backup'; not switching" >&2
+			return 1
+		fi
+		rm -f -- "$work/original"
+		if ! rmdir -- "$work"; then
+			echo "dns-resolver-setup: failed to clean backup work dir for '$resolver'; not switching" >&2
+			return 1
+		fi
+	fi
+
+	ln -sfnT "$target" "$resolver" || {
+		echo "dns-resolver-setup: failed to link '$resolver' to '$target'" >&2
+		return 1
+	}
+
+	if ! systemctl disable --no-reload skorion-dns-resolver.service; then
+		echo "dns-resolver-setup: failed to disable skorion-dns-resolver.service" >&2
+		return 1
+	fi
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+	configure_resolver /etc/resolv.conf /usr/lib/systemd/resolv.conf
+fi

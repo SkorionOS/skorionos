@@ -1,0 +1,34 @@
+#!/bin/bash
+
+post_install() {
+	local mount_root="$1"
+	local etc_dir
+	local wants_dir
+	local unit_link
+
+	if [ -z "$mount_root" ] || [ ! -d "$mount_root" ]; then
+		echo "dns-resolver.migration: invalid or missing mount root: '$mount_root'" >&2
+		return 1
+	fi
+
+	etc_dir="$mount_root/etc"
+	if [ ! -d "$etc_dir" ]; then
+		echo "dns-resolver.migration: missing etc directory: '$etc_dir'" >&2
+		return 1
+	fi
+
+	wants_dir="$etc_dir/systemd/system/multi-user.target.wants"
+	mkdir -p "$wants_dir" || {
+		echo "dns-resolver.migration: failed to create '$wants_dir'" >&2
+		return 1
+	}
+
+	unit_link="$wants_dir/skorion-dns-resolver.service"
+	if [ -L "$unit_link" ] && [ "$(readlink "$unit_link")" = /usr/lib/systemd/system/skorion-dns-resolver.service ]; then
+		return 0
+	fi
+	ln -sfnT /usr/lib/systemd/system/skorion-dns-resolver.service "$unit_link" || {
+		echo "dns-resolver.migration: failed to link skorion-dns-resolver.service in '$wants_dir'" >&2
+		return 1
+	}
+}
