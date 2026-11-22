@@ -164,6 +164,12 @@ if [ -z "${ARCHIVE_DATE}" ]; then
 		${BUILD_PATH}/etc/pacman.d/mirrorlist
 fi
 
+# arch-chroot temporarily bind-mounts its resolver during installation.
+# Set the final image link after chroot teardown and the last rootfs copy.
+if [ -z "${TEST_BUILD}" ]; then
+	ln -sfnT /usr/lib/systemd/resolv.conf "${BUILD_PATH}/etc/resolv.conf"
+fi
+
 # show free space before snapshot
 echo "Free space"
 df -h

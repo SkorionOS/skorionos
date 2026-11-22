@@ -239,4 +239,3 @@ mkdir -p /var
 mkdir -p /frzr_root
 mkdir -p /efi
 mkdir -p /nix
-ln -sfnT /usr/lib/systemd/resolv.conf /etc/resolv.conf

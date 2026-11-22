@@ -9,6 +9,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MIGRATION = os.path.join(REPO_ROOT, "rootfs", "usr", "lib", "frzr.d", "dns-resolver.migration")
 NM_CONF = os.path.join(REPO_ROOT, "rootfs", "etc", "NetworkManager", "conf.d", "20-systemd-resolved.conf")
 ALL_INSTALL = os.path.join(REPO_ROOT, "all-install.sh")
+BUILD_IMAGE = os.path.join(REPO_ROOT, "build-image.sh")
 MANIFEST = os.path.join(REPO_ROOT, "manifest")
 HELPER = os.path.join(REPO_ROOT, "rootfs", "usr", "lib", "skorionos", "dns-resolver-setup")
 UNIT = os.path.join(REPO_ROOT, "rootfs", "usr", "lib", "systemd", "system", "skorion-dns-resolver.service")
@@ -480,14 +481,20 @@ class HelperTests(unittest.TestCase):
 
 
 class OrderingAndConfigTests(unittest.TestCase):
-	def test_fresh_link_after_download(self):
+	def test_fresh_link_after_chroot_and_before_snapshot(self):
 		with open(ALL_INSTALL, "r", encoding="utf-8") as f:
-			text = f.read()
-		download = text.find("postinstall_download")
-		link = text.find("ln -sfnT /usr/lib/systemd/resolv.conf /etc/resolv.conf")
-		self.assertNotEqual(download, -1)
-		self.assertNotEqual(link, -1)
-		self.assertGreater(link, download)
+			installer = f.read()
+		with open(BUILD_IMAGE, "r", encoding="utf-8") as f:
+			builder = f.read()
+		self.assertIn("postinstall_download", installer)
+		self.assertNotIn(f"ln -sfnT {RESOLV_TARGET} /etc/resolv.conf", installer)
+		chroot = builder.index("arch-chroot ${BUILD_PATH} ")
+		last_overlay = builder.rindex("cp -R rootfs/. ${BUILD_PATH}/")
+		link = builder.index(f'ln -sfnT {RESOLV_TARGET} "${{BUILD_PATH}}/etc/resolv.conf"')
+		snapshot = builder.index("btrfs subvolume snapshot -r")
+		self.assertLess(chroot, last_overlay)
+		self.assertLess(last_overlay, link)
+		self.assertLess(link, snapshot)
 
 	def test_manifest_includes_resolver_boot_unit(self):
 		with open(MANIFEST, "r", encoding="utf-8") as f:
